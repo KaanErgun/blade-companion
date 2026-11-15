@@ -10,13 +10,15 @@ The native Android app has Device, Connection, Market and About screens, with Tu
 
 Discovery and permission are displayed separately from a verified kernel response. The diagnostic transport accepts only VID:PID `0525:a4a7` with the expected single ACM control/data pair. Each request uses a fresh response token, a bounded response and a timeout. It sends `uname -srm` with fixed framing; there is no arbitrary command entry, reboot or firmware write action. The USB response is shown in memory and is not logged or uploaded.
 
-The market has an explicit unpublished empty state. Camera streaming, remote assistance, device updates and an application catalog are not implemented in this slice. No HTTP device API is assumed. Physical phone-to-Blade USB testing and phone UI inspection remain pending.
+The market has an explicit unpublished empty state. Camera streaming, remote assistance, device updates and an application catalog are not implemented in this slice. No HTTP device API is assumed. Physical phone-to-Blade USB transport testing remains pending; phone UI inspection is recorded below.
 
 ## Device verification
 
-On 2026-11-15, the debug APK from the companion working tree, before its independent initial commit, was installed on Nothing A063 (Android 15). The installed `base.apk` and local build both have SHA256 `0df37ada683fc7e267c1ddb0070581aaeed6580a7a66982fb54599da5c51b541`. Package Manager reports version `1.0.0-rc-beta-dev`, version code `1`, minimum API `23` and target API `35`.
+On 2026-11-15, the debug APK from the source recorded in initial commit `ef6b0f5` was installed on Nothing A063 (Android 15). The installed `base.apk` and local build both have SHA256 `0df37ada683fc7e267c1ddb0070581aaeed6580a7a66982fb54599da5c51b541`. Package Manager reports version `1.0.0-rc-beta-dev`, version code `1`, minimum API `23` and target API `35`.
 
-The initial black screenshot was captured while the phone was asleep behind its secure lock screen. The companion process was alive, its activity was stopped behind the lock, and its crash buffer had no application crash. Visual verification of the four tabs requires the owner to unlock the phone; this check does not bypass the lock or change screen security settings. Local evidence is kept outside git in `artifacts/evidence/2026-11-15/companion/` of the OS workspace.
+After the owner unlocked the phone normally, all four tabs were opened and visually inspected on the real device. Device rendered in portrait and landscape; Connection showed the actual empty USB list and its refresh control responded; Market showed its unpublished catalog state; About displayed the developer name, development version and MIT license, with lower text reachable by scrolling in landscape. The activity remained `RESUMED` and its process had no crash-buffer entries after the checks. No application fix or phone setting change was needed.
+
+Local evidence is kept outside git in `artifacts/evidence/2026-11-15/companion/` of the OS workspace: `01-device.png`, `01-device-landscape.png`, `02-connection.png`, `03-market.png`, `04-about.png`, `05-about-scrolled.png`, and `verification.txt`. The initial black capture came from the sleeping secure lock screen, not the app. UIAutomator returned a null root on this phone even while the app was visible, so these checks used observed screenshots and actual touch input; no automated accessibility-tree coverage is claimed.
 
 ## Local build
 
