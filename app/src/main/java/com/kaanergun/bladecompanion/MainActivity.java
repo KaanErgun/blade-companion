@@ -219,8 +219,9 @@ public final class MainActivity extends Activity {
         LinearLayout row = panel();
         row.addView(text(getString(candidate ? R.string.usb_candidate : R.string.usb_other), 18, R.color.ink, true));
         addWithTopSpace(row, text(getString(R.string.usb_ids, device.getVendorId(), device.getProductId()), 14, R.color.secondary, false), 8);
+        int interfaceCount = interfaceCount(device);
         row.addView(text(getResources().getQuantityString(R.plurals.usb_interfaces,
-                device.getInterfaceCount(), device.getInterfaceCount()), 14, R.color.secondary, false));
+                interfaceCount, interfaceCount), 14, R.color.secondary, false));
         addWithTopSpace(row, text(getString(candidate ? R.string.usb_candidate_body : R.string.usb_other_body), 15, R.color.secondary, false), 12);
         if (candidate) {
             boolean granted = usb.hasPermission(device);
@@ -233,6 +234,12 @@ public final class MainActivity extends Activity {
             addWithTopSpace(row, text(getString(R.string.kernel_result, identity.release, identity.architecture), 17, R.color.verified, true), 16);
         }
         addWithTopSpace(content, row, 16);
+    }
+
+    private static int interfaceCount(UsbDevice device) {
+        java.util.Set<Integer> ids = new java.util.HashSet<>();
+        for (int i = 0; i < device.getInterfaceCount(); i++) { ids.add(device.getInterface(i).getId()); }
+        return ids.size();
     }
 
     private void requestUsbPermission(UsbDevice device) {

@@ -40,10 +40,11 @@ public final class UsbDiagnostics {
                 UsbEndpoint endpoint = item.getEndpoint(j);
                 endpoints.add(new CdcAcmProfile.Endpoint(endpoint.getAddress(), endpoint.getType()));
             }
-            interfaces.add(new CdcAcmProfile.Interface(item.getId(), item.getInterfaceClass(),
-                    item.getInterfaceSubclass(), endpoints));
+            interfaces.add(new CdcAcmProfile.Interface(item.getId(), item.getAlternateSetting(), item.getInterfaceClass(),
+                    item.getInterfaceSubclass(), item.getInterfaceProtocol(), endpoints));
         }
-        return CdcAcmProfile.find(device.getVendorId(), device.getProductId(), interfaces);
+        return CdcAcmProfile.find(device.getVendorId(), device.getProductId(), device.getDeviceClass(),
+                device.getDeviceSubclass(), device.getDeviceProtocol(), device.getConfigurationCount(), interfaces);
     }
 
     /** Call on a worker thread. USB permission must already have been granted by Android. */
@@ -55,8 +56,8 @@ public final class UsbDiagnostics {
         UsbInterface data = null;
         for (int i = 0; i < device.getInterfaceCount(); i++) {
             UsbInterface item = device.getInterface(i);
-            if (item.getId() == profile.controlId) { control = item; }
-            if (item.getId() == profile.dataId) { data = item; }
+            if (item.getId() == profile.controlId && item.getAlternateSetting() == 0) { control = item; }
+            if (item.getId() == profile.dataId && item.getAlternateSetting() == 0) { data = item; }
         }
         if (control == null || data == null) { throw new ProbeException(Failure.PROFILE); }
         UsbEndpoint input = null;
@@ -73,6 +74,7 @@ public final class UsbDiagnostics {
         boolean dataClaimed = false;
         boolean dtr = false;
         try {
+            if (!profile.matchesDescriptors(connection.getRawDescriptors())) { throw new ProbeException(Failure.PROFILE); }
             controlClaimed = connection.claimInterface(control, true);
             dataClaimed = controlClaimed && connection.claimInterface(data, true);
             if (!dataClaimed) { throw new ProbeException(Failure.CLAIM); }

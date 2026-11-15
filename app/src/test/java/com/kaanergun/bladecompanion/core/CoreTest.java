@@ -22,28 +22,28 @@ public final class CoreTest {
     }
 
     private static CdcAcmProfile.Interface control(int id, int endpoint) {
-        return new CdcAcmProfile.Interface(id, 2, 2,
+        return new CdcAcmProfile.Interface(id, 0, 2, 2, 1,
                 Collections.singletonList(new CdcAcmProfile.Endpoint(endpoint, 3)));
     }
 
     private static CdcAcmProfile.Interface data(int id, int input, int output) {
-        return new CdcAcmProfile.Interface(id, 10, 0, Arrays.asList(
+        return new CdcAcmProfile.Interface(id, 0, 10, 0, 0, Arrays.asList(
                 new CdcAcmProfile.Endpoint(input, 2), new CdcAcmProfile.Endpoint(output, 2)));
     }
 
     private static CdcAcmProfile match(CdcAcmProfile.Interface... interfaces) {
-        return CdcAcmProfile.find(0x0525, 0xa4a7, Arrays.asList(interfaces));
+        return CdcAcmProfile.find(0x0525, 0xa4a7, 2, 0, 0, 1, Arrays.asList(interfaces));
     }
 
     public static void main(String[] args) {
         List<CdcAcmProfile.Interface> valid = Arrays.asList(control(0, 0x81), data(1, 0x82, 3));
-        CdcAcmProfile profile = CdcAcmProfile.find(0x0525, 0xa4a7, valid);
+        CdcAcmProfile profile = CdcAcmProfile.find(0x0525, 0xa4a7, 2, 0, 0, 1, valid);
         check(profile != null && profile.controlId == 0 && profile.dataId == 1, "known diagnostic gadget");
         check(profile.inputAddress == 0x82 && profile.outputAddress == 3, "endpoint directions");
         check(match(data(4, 0x83, 2), control(3, 0x81)).controlId == 3, "interface order and IDs");
-        check(CdcAcmProfile.find(1, 0xa4a7, valid) == null, "unknown VID rejected");
-        check(CdcAcmProfile.find(0x0525, 1, valid) == null, "unknown PID rejected");
-        check(CdcAcmProfile.find(0x0525, 0xa4a7, null) == null, "absent interfaces");
+        check(CdcAcmProfile.find(1, 0xa4a7, 2, 0, 0, 1, valid) == null, "unknown VID rejected");
+        check(CdcAcmProfile.find(0x0525, 1, 2, 0, 0, 1, valid) == null, "unknown PID rejected");
+        check(CdcAcmProfile.find(0x0525, 0xa4a7, 2, 0, 0, 1, null) == null, "absent interfaces");
         check(match(control(0, 0x81)) == null, "missing data interface");
         check(match(control(0, 0x81), data(1, 0x82, 3), data(2, 0x84, 4)) == null, "ambiguous composite gadget");
         check(match(control(0, 0x81), data(0, 0x82, 3)) == null, "duplicate interface IDs");
@@ -55,9 +55,10 @@ public final class CoreTest {
         check(match(control(0, 0x81), data(1, 0x92, 3)) == null, "reserved address bits rejected");
         check(match(control(-1, 0x81), data(1, 0x82, 3)) == null, "invalid interface ID");
         check(match(control(0, 0x81), null) == null, "null interface");
-        check(match(control(0, 0x81), new CdcAcmProfile.Interface(1, 10, 0,
+        check(match(control(0, 0x81), new CdcAcmProfile.Interface(1, 0, 10, 0, 0,
                 Arrays.asList(new CdcAcmProfile.Endpoint(0x82, 3), new CdcAcmProfile.Endpoint(3, 2)))) == null,
                 "data transfer type must be bulk");
+        checks += UsbProfileTest.run();
         KernelProbe probe = new KernelProbe(TOKEN);
         String begin = "BLADE_INFO_" + TOKEN;
         String end = "BLADE_DONE_" + TOKEN;
