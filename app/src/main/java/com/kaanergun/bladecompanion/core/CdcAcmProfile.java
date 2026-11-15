@@ -3,7 +3,7 @@ package com.kaanergun.bladecompanion.core;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Discovery of the two local diagnostic layouts; descriptors do not authenticate a device. */
+/** Discovery of the local diagnostic layouts; descriptors do not authenticate a device. */
 public final class CdcAcmProfile {
     public static final int VENDOR = 0x0525;
     public static final int PRODUCT = 0xa4a7;
@@ -14,9 +14,11 @@ public final class CdcAcmProfile {
     public final int inputAddress;
     public final int outputAddress;
     private final boolean composite;
+    private final int networkSubclass;
 
-    private CdcAcmProfile(boolean composite, Interface control, Interface data) {
-        this.composite = composite;
+    private CdcAcmProfile(int networkSubclass, Interface control, Interface data) {
+        this.networkSubclass = networkSubclass;
+        composite = networkSubclass != 0;
         controlId = control.id;
         dataId = data.id;
         Endpoint first = data.endpoints.get(0);
@@ -78,15 +80,19 @@ public final class CdcAcmProfile {
         }
         Interface control;
         Interface data;
+        int networkSubclass = 0;
         if (composite) {
             Interface ethernet = get(interfaces, 0, 0);
             Interface idle = get(interfaces, 1, 0);
             Interface active = get(interfaces, 1, 1);
             control = get(interfaces, 2, 0);
             data = get(interfaces, 3, 0);
-            if (!matches(ethernet, 2, 6, 0) || !notification(ethernet)
-                    || !matches(idle, 10, 0, 0) || !idle.endpoints.isEmpty()
-                    || !matches(active, 10, 0, 0) || !bulkPair(active)) { return null; }
+            if ((!matches(ethernet, 2, 6, 0) && !matches(ethernet, 2, 13, 0))
+                    || !notification(ethernet)) { return null; }
+            networkSubclass = ethernet.subclass;
+            int dataProtocol = networkSubclass == 13 ? 1 : 0;
+            if (!matches(idle, 10, 0, dataProtocol) || !idle.endpoints.isEmpty()
+                    || !matches(active, 10, 0, dataProtocol) || !bulkPair(active)) { return null; }
         } else {
             control = interfaces.get(0);
             data = interfaces.get(1);
@@ -95,7 +101,7 @@ public final class CdcAcmProfile {
         }
         return matches(control, 2, 2, 1) && notification(control)
                 && matches(data, 10, 0, 0) && bulkPair(data)
-                ? new CdcAcmProfile(composite, control, data) : null;
+                ? new CdcAcmProfile(networkSubclass, control, data) : null;
     }
 
     /** Validate the single configuration and CDC unions before claiming any interface. */
@@ -108,9 +114,10 @@ public final class CdcAcmProfile {
         Interface current = null;
         int declaredEndpoints = 0;
         boolean acmUnion = false;
-        boolean ecmUnion = false;
+        boolean networkUnion = false;
         boolean acmAssociation = false;
-        boolean ecmAssociation = false;
+        boolean networkAssociation = false;
+        boolean ncmFunctional = false;
         for (int offset = 27; offset < raw.length;) {
             if (offset + 2 > raw.length) { return false; }
             int length = u(raw, offset);
@@ -137,25 +144,31 @@ public final class CdcAcmProfile {
                     if (length != 5 || u(raw, offset + 3) != current.id) { return false; }
                     if (current.id == controlId && u(raw, offset + 4) == dataId && !acmUnion) {
                         acmUnion = true;
-                    } else if (composite && current.id == 0 && u(raw, offset + 4) == 1 && !ecmUnion) {
-                        ecmUnion = true;
+                    } else if (composite && current.id == 0 && u(raw, offset + 4) == 1 && !networkUnion) {
+                        networkUnion = true;
                     } else { return false; }
+                } else if (u(raw, offset + 2) == 0x1a) {
+                    // Linux f_ncm: NCM 1.00 with packet-filter and CRC-mode capabilities.
+                    if (networkSubclass != 13 || current.id != 0 || length != 6 || ncmFunctional
+                            || word(raw, offset + 3) != 0x0100 || u(raw, offset + 5) != 0x11) { return false; }
+                    ncmFunctional = true;
                 }
             } else if (type == 11) {
                 if (length != 8 || u(raw, offset + 3) != 2 || u(raw, offset + 4) != 2) { return false; }
                 if (u(raw, offset + 2) == controlId && u(raw, offset + 5) == 2
                         && u(raw, offset + 6) == 1 && !acmAssociation) { acmAssociation = true; }
-                else if (composite && u(raw, offset + 2) == 0 && u(raw, offset + 5) == 6
-                        && u(raw, offset + 6) == 0 && !ecmAssociation) { ecmAssociation = true; }
+                else if (composite && u(raw, offset + 2) == 0 && u(raw, offset + 5) == networkSubclass
+                        && u(raw, offset + 6) == 0 && !networkAssociation) { networkAssociation = true; }
                 else { return false; }
             } else { return false; }
             offset += length;
         }
         if (current == null || current.endpoints.size() != declaredEndpoints || !acmUnion || !acmAssociation
-                || (composite && (!ecmUnion || !ecmAssociation))) { return false; }
+                || (composite && (!networkUnion || !networkAssociation))
+                || (networkSubclass == 13 && !ncmFunctional)) { return false; }
         CdcAcmProfile parsed = find(word(raw, 8), word(raw, 10), u(raw, 4), u(raw, 5), u(raw, 6),
                 u(raw, 17), interfaces);
-        return parsed != null && parsed.composite == composite && parsed.controlId == controlId
+        return parsed != null && parsed.networkSubclass == networkSubclass && parsed.controlId == controlId
                 && parsed.dataId == dataId && parsed.inputAddress == inputAddress
                 && parsed.outputAddress == outputAddress;
     }
