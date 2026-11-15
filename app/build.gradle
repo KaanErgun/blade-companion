@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.kaanergun.bladecompanion'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.kaanergun.bladecompanion'
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0-rc-beta-dev'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    lint { abortOnError true }
+}
+
+def coreClasses = layout.buildDirectory.dir('core-test-classes')
+tasks.register('compileCoreTests', JavaCompile) {
+    source fileTree('src/main/java/com/kaanergun/bladecompanion/core') { include '**/*.java' }
+    source fileTree('src/test/java/com/kaanergun/bladecompanion/core') { include '**/*.java' }
+    classpath = files()
+    destinationDirectory = coreClasses
+    options.release = 8
+    options.compilerArgs += ['-Xlint:all', '-Werror']
+    doFirst {
+        if (!file('src/test/java/com/kaanergun/bladecompanion/core/CoreTest.java').isFile()) {
+            throw new GradleException('Core test harness is missing.')
+        }
+    }
+}
+tasks.register('verifyCore', JavaExec) {
+    dependsOn 'compileCoreTests'
+    classpath = files(coreClasses)
+    mainClass = 'com.kaanergun.bladecompanion.core.CoreTest'
+    enableAssertions = true
+    mustRunAfter 'lintDebug'
+}
+tasks.named('check') { dependsOn 'verifyCore' }
+tasks.configureEach {
+    if (name == 'lintDebug') { mustRunAfter 'compileDebugJavaWithJavac' }
+    if (name == 'packageDebug' || name == 'assembleDebug') { mustRunAfter 'verifyCore' }
+}
