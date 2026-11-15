@@ -8,11 +8,17 @@ The current version is `1.0.0-rc-beta-dev`, a local development package. It is n
 
 The native Android app has Device, Connection, Market and About screens, with Turkish UI strings in Android resources. It discovers real USB host devices, requests Android permission only after a user action, and can issue a fixed read-only kernel information request to the project's CDC-ACM diagnostic gadget.
 
-Discovery and permission are displayed separately from a verified kernel response. The diagnostic transport accepts only VID:PID `0525:a4a7` with the expected single ACM control/data pair. Each request uses a fresh response token, a bounded response and a timeout. It sends `uname -srm` with fixed framing; there is no arbitrary command entry, reboot or firmware write action. The USB response is shown in memory and is not logged or uploaded.
+Discovery and permission are displayed separately from a verified kernel response. Discovery accepts two narrow USB 2 layouts: VID:PID `0525:a4a7` with one ACM control/data pair, and `1d6b:0104` with device class/subclass/protocol `ef/02/01`, ECM interfaces 0/1 and ACM interfaces 2/3. The ECM data interface must have its empty alternate 0 and bulk alternate 1; the five descriptor records represent four interface IDs. After Android permission, raw configuration lengths/values, required interface association descriptors (IADs), CDC union ownership/pairing and endpoint layout are checked before either ACM interface is claimed. ECM interfaces remain unclaimed. These checks identify a supported layout, not an authenticated device. Each request uses a fresh response token, a bounded response and a timeout. It sends `uname -srm` with fixed framing; there is no arbitrary command entry, reboot or firmware write action. The USB response is shown in memory and is not logged or uploaded.
 
 The market has an explicit unpublished empty state. Camera streaming, remote assistance, device updates and an application catalog are not implemented in this slice. No HTTP device API is assumed. Physical phone-to-Blade USB transport testing remains pending; phone UI inspection is recorded below.
 
-## Device verification
+## Current validation
+
+On 2026-11-15, source commit `5651cb6` passed `./scripts/check.sh`: Java compilation, Android lint, **77 core checks**, and debug APK assembly, exit 0 in 6 seconds. Tests cover both accepted layouts, alternate settings, endpoint directions/uniqueness, foreign and ambiguous profiles, required interface associations, CDC union ownership, exact configuration values, malformed lengths and truncated descriptors. The local APK SHA256 is `a188d076ce02b46e8dde561930259b30478a775391eb6e765795205ed03da7d2`.
+
+The same APK was installed successfully on Nothing A063 / Android 15 and its installed `base.apk` SHA256 matched. Its process remained alive and the process-filtered crash log was empty. A fresh visual regression was not completed because the phone was sleeping behind its secure lock screen; the earlier four-tab inspection below belongs to the earlier APK. No lock bypass or phone setting change was attempted. Physical phone-to-Blade testing of either USB profile is still pending. Local gate, source hashes and installation evidence are under ignored `artifacts/ecm-acm-2026-11-15/`; `00-screen-off.png` records the black sleeping-screen capture and is not an application UI success screenshot.
+
+## Earlier device UI verification
 
 On 2026-11-15, the debug APK from the source recorded in initial commit `ef6b0f5` was installed on Nothing A063 (Android 15). The installed `base.apk` and local build both have SHA256 `0df37ada683fc7e267c1ddb0070581aaeed6580a7a66982fb54599da5c51b541`. Package Manager reports version `1.0.0-rc-beta-dev`, version code `1`, minimum API `23` and target API `35`.
 
