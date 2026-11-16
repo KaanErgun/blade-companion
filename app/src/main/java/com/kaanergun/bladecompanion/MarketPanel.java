@@ -65,7 +65,7 @@ final class MarketPanel {
     private TextView countdown;
     private Uri selectedDocument;
     private String selectedCatalog,selectedId,selectedPackage;
-    private boolean selectedFromCatalog;
+    private boolean selectedFromCatalog, revealPrepared;
 
     MarketPanel(Activity activity,Runnable redraw) {
         this.activity=activity; this.redraw=redraw;
@@ -266,7 +266,7 @@ final class MarketPanel {
                     check(ticket);
                     if (entry!=null) { entry.checkPreview(value.preview); }
                     post(ticket,() -> {
-                        prepared=value; busy=false; progress=-1;
+                        prepared=value; revealPrepared=true; busy=false; progress=-1;
                         notice=value.preview.installable?R.string.market_verified:R.string.market_unsupported;
                         tick(ticket);
                     });
@@ -350,6 +350,29 @@ final class MarketPanel {
         add(content,label(activity.getString(R.string.market_title),28,true));
         add(content,label(activity.getString(notice),16,false));
         if (!ready) { return; }
+        if (prepared!=null) {
+            MarketProtocol.Preview preview=prepared.preview;
+            LinearLayout card=card(); add(card,label(activity.getString(R.string.market_preview,preview.id,preview.version),20,true));
+            add(card,label(activity.getString(R.string.market_signer,preview.signer),13,false));
+            add(card,label(permissions(preview.permissions),15,false));
+            countdown=label("",14,false); add(card,countdown);
+            if (preview.installable && MarketProtocol.supported(preview.permissions,preview.runAs)) {
+                add(card,label(activity.getString(R.string.market_install_note),14,false));
+                int title=prepared.previous!=null && prepared.previous.installed?R.string.market_update:R.string.market_install;
+                add(card,button(title,() -> new AlertDialog.Builder(activity).setTitle(title)
+                        .setMessage(activity.getString(R.string.market_confirm_install,preview.id,preview.version,permissions(preview.permissions)))
+                        .setNegativeButton(R.string.market_cancel,null).setPositiveButton(title,(dialog,which) -> install()).show(),!busy));
+            } else { add(card,label(activity.getString(R.string.market_unsupported),16,true)); }
+            add(content,card);
+            if (revealPrepared) {
+                revealPrepared=false;
+                content.post(() -> {
+                    if (prepared!=null && content.getParent() instanceof android.widget.ScrollView) {
+                        ((android.widget.ScrollView)content.getParent()).scrollTo(0,0);
+                    }
+                });
+            }
+        }
         add(content,button(R.string.market_import_pairing,() -> picker(IMPORT_MANAGEMENT),!busy));
         catalog.render(content,pairing!=null && pendingId==null,busy);
         if (pairing==null) { return; }
@@ -365,21 +388,6 @@ final class MarketPanel {
         if (pendingId!=null) {
             add(content,label(activity.getString(R.string.market_uncertain,pendingId),16,true));
             add(content,button(R.string.market_query,this::queryPending,!busy));
-        }
-        if (prepared!=null) {
-            MarketProtocol.Preview preview=prepared.preview;
-            LinearLayout card=card(); add(card,label(activity.getString(R.string.market_preview,preview.id,preview.version),20,true));
-            add(card,label(activity.getString(R.string.market_signer,preview.signer),13,false));
-            add(card,label(permissions(preview.permissions),15,false));
-            countdown=label("",14,false); add(card,countdown);
-            if (preview.installable && MarketProtocol.supported(preview.permissions,preview.runAs)) {
-                add(card,label(activity.getString(R.string.market_install_note),14,false));
-                int title=prepared.previous!=null && prepared.previous.installed?R.string.market_update:R.string.market_install;
-                add(card,button(title,() -> new AlertDialog.Builder(activity).setTitle(title)
-                        .setMessage(activity.getString(R.string.market_confirm_install,preview.id,preview.version,permissions(preview.permissions)))
-                        .setNegativeButton(R.string.market_cancel,null).setPositiveButton(title,(dialog,which) -> install()).show(),!busy));
-            } else { add(card,label(activity.getString(R.string.market_unsupported),16,true)); }
-            add(content,card);
         }
         if (apps.isEmpty()) { add(content,label(activity.getString(R.string.market_no_apps),16,false)); }
         for (MarketProtocol.App app:apps) {

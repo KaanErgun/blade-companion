@@ -22,6 +22,9 @@ final class MarketTest {
     }
     static int run() {
         try {
+            check(MarketProtocol.previewDeadline(300100,100)==119100,"review leaves confirmation margin");
+            check(MarketProtocol.previewDeadline(300100,290100)==300100,"absolute lifetime caps review");
+            check(MarketProtocol.previewDeadline(300100,300101)==300100,"expired lifetime stays expired");
             ByteArrayOutputStream wire=new ByteArrayOutputStream();
             MarketProtocol.write(new DataOutputStream(wire),20,0x10203040L,HASH);
             check(CompanionProtocol.hex(Arrays.copyOf(wire.toByteArray(),16)).equals("424c4431000100141020304000000020"),"shared management AUTH vector");

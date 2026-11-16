@@ -114,7 +114,7 @@ public final class MarketClient implements AutoCloseable {
         } catch (CompanionProtocol.RemoteException error) { if (error.status==4) { return null; } throw error; }
     }
     public Prepared upload(InputStream source, PackageTransfer.Result expected, PackageTransfer.Progress progress) throws Exception {
-        active(); long deadline=SystemClock.elapsedRealtime()+300000;
+        active(); long deadline=SystemClock.elapsedRealtime()+MarketProtocol.UPLOAD_LIFE_MS;
         byte[] upload=call(MarketProtocol.BEGIN,MarketProtocol.begin(expected.bytes,expected.sha256));
         long sent=0;
         {
@@ -127,9 +127,9 @@ public final class MarketClient implements AutoCloseable {
             }
         }
         if (sent!=expected.bytes) { throw new IOException("Snapshot size changed"); }
-        // Successful native verification renews idle time; the absolute upload limit remains.
+        // Native verification starts review time; the absolute upload limit remains.
         MarketProtocol.Preview preview=MarketJson.preview(call(MarketProtocol.FINISH,MarketProtocol.finish(upload)));
-        long expiresAt=Math.min(deadline,SystemClock.elapsedRealtime()+14000);
+        long expiresAt=MarketProtocol.previewDeadline(deadline,SystemClock.elapsedRealtime());
         if (!preview.revision.equals(CompanionProtocol.hex(expected.sha256)) || preview.bytes!=expected.bytes) { throw new IOException("Verified preview mismatch"); }
         MarketProtocol.App previous=status(preview.id);
         return new Prepared(preview,previous,upload,expiresAt);

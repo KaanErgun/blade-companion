@@ -12,8 +12,14 @@ public final class MarketProtocol {
     public static final int AUTH = 20, LIST = 32, BEGIN = 33, CHUNK = 34, FINISH = 35,
             ABORT = 36, INSTALL = 37, ACTION = 38, STATUS = 39;
     public static final int HUD = 4, NETWORK = 8, STORAGE = 16, MAX_PACKAGE = 64 * 1024 * 1024, MAX_CHUNK = 65536;
+    public static final int UPLOAD_LIFE_MS = 300000, UPLOAD_IDLE_MS = 15000, UPLOAD_REVIEW_MS = 120000;
     public static final String EMPTY_REVISION = new String(new char[64]).replace('\0', '0');
     private MarketProtocol() { }
+
+    public static long previewDeadline(long uploadDeadline, long verifiedAt) {
+        // Leave one second for the confirmation to reach the OS before expiry.
+        return Math.min(uploadDeadline, verifiedAt + UPLOAD_REVIEW_MS - 1000);
+    }
 
     public static boolean validId(String value) {
         return value != null && value.length() <= 96 && value.matches("[a-z0-9]+(?:[.-][a-z0-9]+)+");
