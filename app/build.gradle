@@ -36,7 +36,7 @@ tasks.register('compileCoreTests', JavaCompile) {
 }
 tasks.register('verifyCore', JavaExec) {
     dependsOn 'compileCoreTests'
-    classpath = files(coreClasses)
+    classpath = files(coreClasses, 'src/test/resources')
     mainClass = 'com.kaanergun.bladecompanion.core.CoreTest'
     enableAssertions = true
     mustRunAfter 'lintDebug'

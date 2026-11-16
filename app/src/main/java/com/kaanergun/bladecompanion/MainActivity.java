@@ -9,6 +9,22 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
+import android.graphics.Bitmap;
+import android.net.Uri;
+import android.widget.EditText;
+import com.kaanergun.bladecompanion.core.AssistanceState;
+import com.kaanergun.bladecompanion.core.CompanionProtocol;
+import com.kaanergun.bladecompanion.core.PairingRecord;
+import com.kaanergun.bladecompanion.core.StreamStats;
+import com.kaanergun.bladecompanion.net.StreamReportStore;
+import com.kaanergun.bladecompanion.net.PhotoExportStore;
+import com.kaanergun.bladecompanion.core.PhotoTransfer;
+import com.kaanergun.bladecompanion.net.BladeConnection;
+import com.kaanergun.bladecompanion.net.PairingStore;
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
@@ -45,6 +61,27 @@ public final class MainActivity extends Activity {
     private String resultDevice;
     private KernelProbe.Identity identity;
     private int notice;
+    private static final int IMPORT_PAIRING = 50, EXPORT_PHOTO = 51, EXPORT_REPORT = 52;
+    private PairingStore pairingStore;
+    private MarketPanel market;
+    private PairingRecord pairing;
+    private BladeConnection connection;
+    private FramePreview preview;
+    private TextView frameLabel, statisticsLabel;
+    private StreamReportStore reportStore;
+    private PhotoExportStore photoStore;
+    private String reportJson, pendingReport;
+    private int sessionSeconds=300;
+    private EditText hostInput, annotationInput;
+    private String annotationText = "";
+    private int networkNotice;
+    private boolean visible, photoExportPending, photoPreparing;
+    private String pendingPhotoName;
+    private final Runnable photoChanges=() -> runOnUiThread(() -> { if (!isDestroyed()) { reloadPendingPhoto(); } });
+    private com.kaanergun.bladecompanion.core.FrameCoordinates.Point arrowFrom, arrowTo;
+    private String arrowSession;
+    private long arrowFrame;
+
 
     private final BroadcastReceiver usbEvents = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -64,14 +101,44 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        pairingStore = new PairingStore(this);
+        reportStore = new StreamReportStore(this);
+        photoStore = new PhotoExportStore(this);
+        PhotoExportStore.observe(photoChanges);reloadPendingPhoto();
+        final long reportRevision=StreamReportStore.revision();
+        worker.execute(() -> {
+            try { String report=reportStore.load();runOnUiThread(() -> {
+                if (!isDestroyed() && reportRevision==StreamReportStore.revision()) { reportJson=report;render(); }
+            }); } catch (Exception ignored) { /* A damaged optional report does not prevent pairing. */ }
+        });
+        market = new MarketPanel(this, () -> { if (!isDestroyed() && content != null && page == 2) { render(); } });
+        market.restore(savedInstanceState);
+        final long loadRevision = PairingStore.revision();
+        worker.execute(() -> {
+            try {
+                PairingRecord stored = pairingStore.load();
+                runOnUiThread(() -> { if (!isDestroyed() && PairingStore.revision() == loadRevision) { pairing = stored; render(); } });
+            } catch (Exception error) {
+                runOnUiThread(() -> { if (!isDestroyed() && PairingStore.revision() == loadRevision) { networkNotice = R.string.pairing_read_failed; render(); } });
+            }
+        });
         usb = (UsbManager) getSystemService(USB_SERVICE);
-        if (savedInstanceState != null) { page = savedInstanceState.getInt("page", 0); }
+        if (savedInstanceState != null) {
+            page = savedInstanceState.getInt("page", 0);
+            sessionSeconds=savedInstanceState.getInt("session_seconds",300)==1800?1800:300;
+            pendingReport=savedInstanceState.getString("pending_report");
+            if (pendingReport!=null && pendingReport.length()>4096) { pendingReport=null; }
+            annotationText = savedInstanceState.getString("annotation", "");
+            photoExportPending = savedInstanceState.getBoolean("photo_export", false);
+            pendingPhotoName = savedInstanceState.getString("photo_name");
+            if (pendingPhotoName == null || !pendingPhotoName.matches("photo-[0-9a-f]{32}\\.jpg")) { photoExportPending = false; pendingPhotoName = null; }
+        }
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(getColor(R.color.canvas));
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             if (Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
                 view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             } else {
                 view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
@@ -111,17 +178,37 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        visible = true;
+        if (market != null) { market.resume(); }
         if (content != null) { refreshDevices(); render(); }
+    }
+
+    @Override protected void onStop() {
+        visible = false;
+        if (market != null) { market.stop(); }
+        if (connection != null) { connection.close(StreamStats.End.BACKGROUND);retainStatistics();connection = null; }
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        preview = null;
+        super.onStop();
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
+        market.save(state);
         state.putInt("page", page);
+        state.putInt("session_seconds",sessionSeconds);
+        state.putString("pending_report",pendingReport);
+        state.putString("annotation", annotationInput == null ? annotationText : annotationInput.getText().toString());
+        state.putBoolean("photo_export", photoExportPending);
+        state.putString("photo_name", photoExportPending ? pendingPhotoName : null);
     }
 
     @Override protected void onDestroy() {
+        PhotoExportStore.unobserve(photoChanges);
+        if (market != null) { market.destroy(); }
         unregisterReceiver(usbEvents);
-        worker.shutdownNow();
+        // Drain the bounded private report write queued by onStop.
+        worker.shutdown();
         super.onDestroy();
     }
 
@@ -152,6 +239,13 @@ public final class MainActivity extends Activity {
     }
 
     private void render() {
+        if (content == null) { return; }
+        if (annotationInput != null) { annotationText = annotationInput.getText().toString(); }
+        annotationInput = null; hostInput = null; preview = null; frameLabel = null; statisticsLabel=null;
+        AssistanceState.State current=connection==null?AssistanceState.State.DISCONNECTED:connection.state();
+        boolean awake=visible && (current==AssistanceState.State.STARTING || current==AssistanceState.State.ACTIVE);
+        if (awake) { getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); }
+        else { getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); }
         content.removeAllViews();
         navigation.removeAllViews();
         int[] labels = { R.string.nav_device, R.string.nav_connection, R.string.nav_market, R.string.nav_about };
@@ -175,28 +269,141 @@ public final class MainActivity extends Activity {
     }
 
     private void renderDevice() {
-        ImageView glasses = new ImageView(this);
-        glasses.setImageResource(R.drawable.ic_blade);
-        glasses.setContentDescription(getString(R.string.device_illustration));
-        content.addView(glasses, new LinearLayout.LayoutParams(-1, dp(150)));
-        title(identity == null ? R.string.device_title : R.string.kernel_received);
-        paragraph(identity == null ? R.string.device_intro : R.string.kernel_read_note);
-        Button scan = button(R.string.scan_usb, true);
-        scan.setOnClickListener(view -> { page = 1; refreshDevices(); render(); });
-        addWithTopSpace(content, scan, 14);
-        LinearLayout state = panel();
-        if (identity == null) {
-            state.addView(text(getString(R.string.device_status), 18, R.color.ink, true));
-            addWithTopSpace(state, text(getString(R.string.device_status_body), 15, R.color.secondary, false), 8);
-        } else {
-            state.addView(text(getString(R.string.kernel_result, identity.release, identity.architecture), 18, R.color.verified, true));
+        title(R.string.camera_title);
+        if (networkNotice != 0) { paragraph(networkNotice); }
+        AssistanceState.State state = connection == null ? AssistanceState.State.DISCONNECTED : connection.state();
+        int label = state == AssistanceState.State.ACTIVE ? connection.frozen() ? R.string.camera_frozen : R.string.camera_live
+                : state == AssistanceState.State.STARTING ? R.string.camera_starting
+                : state == AssistanceState.State.READY ? R.string.camera_ready
+                : state == AssistanceState.State.CONNECTING ? R.string.camera_connecting : R.string.camera_disconnected;
+        paragraph(label);
+        preview = new FramePreview(this, (from, to) -> {
+            try {
+                if (connection != null && connection.displayed() != null) {
+                    CompanionProtocol.Frame selected = connection.displayed();
+                    connection.arrow(from, to);
+                    arrowFrom = from; arrowTo = to; arrowFrame = selected.id;
+                    arrowSession = CompanionProtocol.hex(selected.session);
+                }
+            }
+            catch (IllegalArgumentException | IllegalStateException error) { networkNotice = R.string.annotation_invalid; render(); }
+        });
+        preview.setContentDescription(getString(R.string.preview_description));
+        preview.display(connection == null ? null : connection.displayedBitmap(), connection != null && connection.frozen() && !connection.busy());
+        CompanionProtocol.Frame selected = connection == null ? null : connection.displayed();
+        if (selected!=null && preview.hasImage()) { connection.frameDisplayed(selected); }
+        if (selected != null && connection.frozen() && selected.id == arrowFrame
+                && CompanionProtocol.hex(selected.session).equals(arrowSession)) { preview.showArrow(arrowFrom, arrowTo); }
+        content.addView(preview, new LinearLayout.LayoutParams(-1, dp(260)));
+        frameLabel = text("", 13, R.color.secondary, false);
+        content.addView(frameLabel);
+        statisticsLabel=text("",13,R.color.secondary,false);content.addView(statisticsLabel);
+        updateFrameLabel();
+        Button duration=button(R.string.camera_duration,false);duration.setText(getString(R.string.camera_duration,sessionSeconds/60));
+        duration.setEnabled(state!=AssistanceState.State.ACTIVE && state!=AssistanceState.State.STARTING);
+        duration.setOnClickListener(view -> new android.app.AlertDialog.Builder(this).setTitle(R.string.camera_duration_title)
+                .setSingleChoiceItems(new String[]{getString(R.string.camera_duration_short),getString(R.string.camera_duration_long)},
+                        sessionSeconds==1800?1:0,(dialog,which) -> { sessionSeconds=which==1?1800:300;dialog.dismiss();render(); }).show());
+        addWithTopSpace(content,duration,8);
+        Button start = button(state == AssistanceState.State.DISCONNECTED ? R.string.open_pairing : R.string.camera_start, true);
+        start.setEnabled(state == AssistanceState.State.DISCONNECTED || (state == AssistanceState.State.READY && connection.cameraAvailable() && !connection.busy()));
+        start.setOnClickListener(view -> {
+            if (state == AssistanceState.State.DISCONNECTED) { page = 1; render(); }
+            else { networkNotice = 0; connection.start(sessionSeconds); render(); }
+        });
+        addWithTopSpace(content, start, 12);
+        Button stop = button(R.string.camera_stop, false);
+        stop.setEnabled(state == AssistanceState.State.STARTING || state == AssistanceState.State.ACTIVE);
+        stop.setOnClickListener(view -> { connection.stop(); retainStatistics(); render(); });
+        addWithTopSpace(content, stop, 4);
+        Button freeze = button(connection != null && connection.frozen() ? R.string.camera_resume : R.string.camera_freeze, false);
+        freeze.setEnabled(state == AssistanceState.State.ACTIVE && connection.displayed() != null && !connection.busy());
+        freeze.setOnClickListener(view -> { if (connection.frozen()) { connection.resume(); } else { connection.freeze(); } });
+        addWithTopSpace(content, freeze, 4);
+        if (connection != null && connection.frozen()) {
+            paragraph(R.string.annotation_instruction);
+            annotationInput = new EditText(this);
+            annotationInput.setHint(R.string.annotation_hint);
+            annotationInput.setText(annotationText);
+            annotationInput.setSingleLine(true);
+            annotationInput.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(160) });
+            addWithTopSpace(content, annotationInput, 8);
+            Button send = button(R.string.annotation_send, true); send.setEnabled(!connection.busy());
+            send.setOnClickListener(view -> {
+                try { connection.text(annotationInput.getText().toString()); }
+                catch (IllegalArgumentException | IllegalStateException error) { networkNotice = R.string.annotation_invalid; render(); }
+            });
+            addWithTopSpace(content, send, 4);
         }
-        addWithTopSpace(content, state, 24);
-        addWithTopSpace(content, text(getString(R.string.development_note), 16, R.color.ink, true), 24);
-        paragraph(R.string.development_body);
+        Button photo = button(R.string.photo_save, false);
+        photo.setEnabled(state == AssistanceState.State.ACTIVE && connection.displayed() != null && !connection.busy() && !photoExportPending && !photoPreparing && !PhotoExportStore.busy() && pendingPhotoName==null);
+        photo.setOnClickListener(view -> connection.photo());
+        addWithTopSpace(content, photo, 4);
+        if (pendingPhotoName!=null) {
+            paragraph(R.string.photo_pending);
+            Button retry=button(R.string.photo_retry,true);retry.setEnabled(!photoExportPending && !photoPreparing && !PhotoExportStore.busy());
+            retry.setOnClickListener(view -> openPhotoPicker());addWithTopSpace(content,retry,4);
+            Button discard=button(R.string.photo_discard,false);discard.setEnabled(!photoExportPending && !photoPreparing && !PhotoExportStore.busy());
+            discard.setOnClickListener(view -> discardPhoto());addWithTopSpace(content,discard,4);
+        }
+        paragraph(R.string.camera_lifecycle_note);
+        Button report=button(R.string.stream_report_export,false);
+        report.setEnabled(reportJson!=null && pendingReport==null && state!=AssistanceState.State.ACTIVE && state!=AssistanceState.State.STARTING);
+        report.setOnClickListener(view -> {
+            pendingReport=reportJson;
+            startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("application/json").putExtra(Intent.EXTRA_TITLE,"Blade-stream-report.json"),EXPORT_REPORT);
+        });
+        addWithTopSpace(content,report,8);paragraph(R.string.stream_report_note);
+    }
+
+    private void retainStatistics() {
+        StreamStats.Snapshot snapshot=connection==null?null:connection.statistics();
+        if (snapshot==null || "ACTIVE".equals(snapshot.endReason)) { return; }
+        String report=snapshot.json();
+        if (report.equals(reportJson)) { return; }
+        reportJson=report;long revision=StreamReportStore.change(report);
+        worker.execute(() -> {
+            try { reportStore.save(report,revision); }
+            catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed()) { networkNotice=R.string.stream_report_failed;render(); } }); }
+        });
+    }
+
+    private void updateFrameLabel() {
+        if (frameLabel == null) { return; }
+        StreamStats.Snapshot stats=connection==null?null:connection.statistics();
+        if (statisticsLabel!=null) { statisticsLabel.setText(stats==null?"":getString(R.string.stream_statistics,stats.received,stats.decoded,stats.displayed,stats.gaps,stats.decodedFps,stats.displayedFps)); }
+        CompanionProtocol.Frame current = connection == null ? null : connection.displayed();
+        frameLabel.setText(current == null ? getString(R.string.frame_waiting)
+                : getString(R.string.frame_identity, Long.toHexString(current.id), current.width, current.height));
     }
 
     private void renderConnection() {
+        title(R.string.pairing_title);
+        if (networkNotice != 0) { paragraph(networkNotice); }
+        paragraph(pairing == null ? R.string.pairing_missing : R.string.pairing_present);
+        Button load = button(R.string.pairing_import, true);
+        load.setOnClickListener(view -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+            startActivityForResult(intent, IMPORT_PAIRING);
+        });
+        addWithTopSpace(content, load, 8);
+        if (pairing != null) {
+            hostInput = new EditText(this); hostInput.setSingleLine(true); hostInput.setHint(R.string.host_hint);
+            hostInput.setInputType(android.text.InputType.TYPE_CLASS_PHONE); hostInput.setText(pairing.host);
+            addWithTopSpace(content, hostInput, 12);
+            Button connect = button(R.string.network_connect, true);
+            connect.setEnabled(connection == null || connection.state() == AssistanceState.State.DISCONNECTED);
+            connect.setOnClickListener(view -> connectNetwork());
+            addWithTopSpace(content, connect, 4);
+            Button disconnect = button(R.string.network_disconnect, false);
+            disconnect.setEnabled(connection != null && connection.state() != AssistanceState.State.DISCONNECTED);
+            disconnect.setOnClickListener(view -> { connection.close(); retainStatistics(); connection = null; render(); });
+            addWithTopSpace(content, disconnect, 4);
+            Button forget = button(R.string.pairing_forget, false);
+            forget.setOnClickListener(view -> forgetPairing());
+            addWithTopSpace(content, forget, 4);
+        }
         title(R.string.connection_title);
         paragraph(R.string.connection_intro);
         Button refresh = button(R.string.refresh, false);
@@ -212,6 +419,183 @@ public final class MainActivity extends Activity {
             for (UsbDevice device : devices) { renderUsbDevice(device); }
         }
         addWithTopSpace(content, text(getString(R.string.kernel_read_note), 14, R.color.secondary, false), 24);
+    }
+
+    private void connectNetwork() {
+        try { pairing = pairing.withHost(hostInput.getText().toString().trim()); }
+        catch (IllegalArgumentException error) { networkNotice = R.string.host_invalid; render(); return; }
+        if (connection != null) { connection.close();retainStatistics(); }
+        final PairingRecord selected = pairing;
+        final long saveRevision = PairingStore.change();
+        worker.execute(() -> {
+            try { pairingStore.save(selected, saveRevision); }
+            catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed()) { networkNotice = R.string.pairing_read_failed; render(); } }); }
+        });
+        networkNotice = 0;
+        connection = new BladeConnection(this, pairing, new BladeConnection.Listener() {
+            @Override public void changed() { if (visible && !isDestroyed()) { render(); } }
+            @Override public void frame(CompanionProtocol.Frame frame, Bitmap image) {
+                if (!visible || isDestroyed() || connection == null || connection.displayed() != frame) { return; }
+                if (preview != null && !preview.hasImage()) { render(); }
+                else {
+                    if (preview != null) { preview.display(image, connection.frozen() && !connection.busy());connection.frameDisplayed(frame); }
+                    updateFrameLabel();
+                }
+            }
+            @Override public void photo(CompanionProtocol.Photo photo) { if (visible && !isDestroyed()) { preparePhoto(photo); } }
+            @Override public void failed(int status) {
+                if (!visible || isDestroyed()) { return; }
+                retainStatistics();
+                networkNotice = status == 1 ? R.string.network_auth_failed : status == 3 ? R.string.network_busy
+                        : status == 4 ? R.string.network_ended : status == 5 ? R.string.network_stale
+                        : status == 6 ? R.string.network_camera_missing : R.string.network_failed;
+                render();
+            }
+        });
+        page = 0; connection.connect(); render();
+    }
+
+    private void forgetPairing() {
+        if (connection != null) { connection.close();retainStatistics(); connection = null; }
+        pairing = null; annotationText = "";
+        final long forgetRevision = PairingStore.change();
+        worker.execute(() -> {
+            try {
+                pairingStore.forget(forgetRevision);
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && PairingStore.revision() == forgetRevision) { networkNotice = R.string.pairing_removed; render(); }
+                });
+            }
+            catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed()) { networkNotice = R.string.pairing_read_failed; render(); } }); }
+        });
+        networkNotice = R.string.pairing_removing; render();
+    }
+
+    private void reloadPendingPhoto() {
+        if (worker.isShutdown()) { return; }
+        long revision=PhotoExportStore.revision();
+        worker.execute(() -> {
+            try {
+                PhotoExportStore.Pending pending=photoStore.load();
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && revision==PhotoExportStore.revision()) { pendingPhotoName=pending==null?null:pending.name;render(); }
+                });
+            } catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed()) { networkNotice=R.string.photo_failed;render(); } }); }
+        });
+    }
+    private void openPhotoPicker() {
+        if (pendingPhotoName==null || photoPreparing || photoExportPending || PhotoExportStore.busy()) { return; }
+        photoExportPending=true;
+        startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType("image/jpeg").putExtra(Intent.EXTRA_TITLE,"Blade-photo.jpg"),EXPORT_PHOTO);
+    }
+    private void discardPhoto() {
+        final String name=pendingPhotoName;if (name==null || photoPreparing || !PhotoExportStore.beginOperation()) { return; }
+        photoPreparing=true;render();
+        worker.execute(() -> {
+            try {
+                PhotoExportStore.Pending pending=photoStore.load();
+                if (pending!=null) {
+                    if (!name.equals(pending.name)) { throw new java.io.IOException("Photo changed"); }
+                    photoStore.discard(pending);
+                }
+                runOnUiThread(() -> { if (!isDestroyed()) { pendingPhotoName=null;photoPreparing=false;networkNotice=R.string.photo_discarded;render(); } });
+            } catch (Exception error) { photoFailed(); }
+            finally { PhotoExportStore.endOperation(); }
+        });
+    }
+    private void photoFailed() {
+        runOnUiThread(() -> { if (!isDestroyed()) { photoPreparing=false;photoExportPending=false;networkNotice=R.string.photo_failed;reloadPendingPhoto();render(); } });
+    }
+    private void preparePhoto(CompanionProtocol.Photo photo) {
+        if (!PhotoExportStore.beginOperation()) { networkNotice=R.string.photo_pending;render();return; }
+        photoPreparing=true;
+        worker.execute(() -> {
+            PhotoExportStore.Pending prepared=null;
+            try {
+                prepared=photoStore.prepare(photo.jpeg);
+            } catch (Exception error) {
+                try {
+                    PhotoExportStore.Pending retained=photoStore.load();
+                    runOnUiThread(() -> { if (!isDestroyed()) { pendingPhotoName=retained==null?null:retained.name; } });
+                } catch (Exception ignored) { /* Preserve the record on every failure. */ }
+                photoFailed();
+            } finally { PhotoExportStore.endOperation(); }
+            if (prepared!=null) {
+                final PhotoExportStore.Pending pending=prepared;
+                runOnUiThread(() -> {
+                    if (isDestroyed()) { return; }
+                    pendingPhotoName=pending.name;photoPreparing=false;
+                    if (visible) { openPhotoPicker(); } else { render(); }
+                });
+            }
+        });
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == MarketPanel.IMPORT_MANAGEMENT || request == MarketPanel.IMPORT_PACKAGE || request==MarketPanel.IMPORT_CATALOG_PACKAGE
+                || request == CatalogPanel.IMPORT_KEY || request == CatalogPanel.IMPORT_CATALOG) {
+            market.activityResult(request, result, data); return;
+        }
+        Uri uri = data == null ? null : data.getData();
+        if (request==EXPORT_REPORT) {
+            final String report=pendingReport;pendingReport=null;
+            if (result!=RESULT_OK || uri==null || report==null) { return; }
+            worker.execute(() -> {
+                try (OutputStream output=getContentResolver().openOutputStream(uri,"wt")) {
+                    if (output==null) { throw new java.io.IOException("No report output"); }
+                    output.write(report.getBytes(java.nio.charset.StandardCharsets.UTF_8));output.flush();
+                    runOnUiThread(() -> { if (!isDestroyed()) { networkNotice=R.string.stream_report_saved;render(); } });
+                } catch (Exception error) { runOnUiThread(() -> { if (!isDestroyed()) { networkNotice=R.string.stream_report_failed;render(); } }); }
+            });return;
+        }
+        if (request == IMPORT_PAIRING && result == RESULT_OK && uri != null) {
+            final long importRevision = PairingStore.change();
+            worker.execute(() -> {
+                try {
+                    byte[] bytes;
+                    try (InputStream input = getContentResolver().openInputStream(uri); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                        if (input == null) { throw new java.io.IOException("No input"); }
+                        byte[] buffer = new byte[1024]; int count;
+                        while ((count = input.read(buffer)) != -1) {
+                            if (output.size() + count > 4096) { throw new java.io.IOException("File too large"); }
+                            output.write(buffer, 0, count);
+                        }
+                        bytes = output.toByteArray();
+                    }
+                    PairingRecord imported = PairingStore.parse(bytes); pairingStore.save(imported, importRevision);
+                    runOnUiThread(() -> { if (!isDestroyed() && PairingStore.revision() == importRevision) { pairing = imported; networkNotice = R.string.pairing_imported; render(); } });
+                } catch (Exception error) {
+                    runOnUiThread(() -> { if (!isDestroyed() && PairingStore.revision() == importRevision) { networkNotice = R.string.pairing_invalid; render(); } });
+                }
+            });
+        } else if (request == EXPORT_PHOTO) {
+            photoExportPending=false;
+            final String name=pendingPhotoName;
+            if (name==null) { networkNotice=R.string.photo_failed;render();return; }
+            if (result!=RESULT_OK || uri==null) { discardPhoto();return; }
+            if (!PhotoExportStore.beginOperation()) { networkNotice=R.string.photo_pending;reloadPendingPhoto();render();return; }
+            photoPreparing=true;
+            worker.execute(() -> {
+                try {
+                    PhotoExportStore.Pending pending=photoStore.load();
+                    if (pending==null || !name.equals(pending.name)) { throw new java.io.IOException("Photo changed"); }
+                    PhotoTransfer.Result copied;
+                    try (InputStream input=new FileInputStream(photoStore.file(pending));OutputStream output=getContentResolver().openOutputStream(uri,"wt")) {
+                        if (output==null) { throw new java.io.IOException("No photo output"); }
+                        copied=PhotoTransfer.copy(input,output,pending.bytes,pending.hash(),bytes -> { });
+                    }
+                    try (InputStream readback=getContentResolver().openInputStream(uri)) {
+                        if (readback==null) { throw new java.io.IOException("No photo readback"); }
+                        PhotoTransfer.verify(readback,copied,bytes -> { });
+                    }
+                    photoStore.discard(pending);
+                    runOnUiThread(() -> { if (!isDestroyed()) { pendingPhotoName=null;photoPreparing=false;networkNotice=R.string.photo_saved;render(); } });
+                } catch (Exception error) { photoFailed(); }
+                finally { PhotoExportStore.endOperation(); }
+            });
+        }
     }
 
     private void renderUsbDevice(UsbDevice device) {
@@ -303,9 +687,7 @@ public final class MainActivity extends Activity {
     }
 
     private void renderMarket() {
-        title(R.string.market_title);
-        empty(R.string.market_empty_title, R.string.market_empty_body);
-        addWithTopSpace(content, text(getString(R.string.market_future), 16, R.color.secondary, false), 24);
+        market.render(content);
     }
 
     private void renderAbout() {

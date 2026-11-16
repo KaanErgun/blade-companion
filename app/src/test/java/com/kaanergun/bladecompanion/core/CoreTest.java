@@ -35,7 +35,7 @@ public final class CoreTest {
         return CdcAcmProfile.find(0x0525, 0xa4a7, 2, 0, 0, 1, Arrays.asList(interfaces));
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         List<CdcAcmProfile.Interface> valid = Arrays.asList(control(0, 0x81), data(1, 0x82, 3));
         CdcAcmProfile profile = CdcAcmProfile.find(0x0525, 0xa4a7, 2, 0, 0, 1, valid);
         check(profile != null && profile.controlId == 0 && profile.dataId == 1, "known diagnostic gadget");
@@ -59,6 +59,13 @@ public final class CoreTest {
                 Arrays.asList(new CdcAcmProfile.Endpoint(0x82, 3), new CdcAcmProfile.Endpoint(3, 2)))) == null,
                 "data transfer type must be bulk");
         checks += UsbProfileTest.run();
+        checks += AssistanceTest.run();
+        checks += ProtocolTest.run();
+        checks += MarketTest.run();
+        checks += GoldenTest.run();
+        checks += CatalogTest.run();
+        checks += StreamStatsTest.run();
+        checks += PhotoTransferTest.run();
         KernelProbe probe = new KernelProbe(TOKEN);
         String begin = "BLADE_INFO_" + TOKEN;
         String end = "BLADE_DONE_" + TOKEN;
