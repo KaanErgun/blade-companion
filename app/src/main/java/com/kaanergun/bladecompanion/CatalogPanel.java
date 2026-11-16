@@ -38,6 +38,8 @@ final class CatalogPanel {
     private byte[] key;
     private SignedCatalog catalog;
     private int notice=R.string.catalog_intro,page;
+    private Uri selectedDocument;
+    private int selectedRequest;
     CatalogPanel(Activity activity,Runnable redraw,ExecutorService worker,Selection selection) {
         this.activity=activity;this.redraw=redraw;this.worker=worker;this.selection=selection;store=new CatalogStore(activity);
         worker.execute(() -> {
@@ -45,11 +47,22 @@ final class CatalogPanel {
             try { if (available) { saved=store.key();value=store.load(); } }catch (Exception error) { failed=true; }
             final byte[] loadedKey=saved;final SignedCatalog loaded=value;final boolean error=failed;
             main.post(() -> { if (alive) { supported=available;key=loadedKey;catalog=loaded;ready=true;
-                if (error) { notice=R.string.catalog_invalid; }redraw.run(); } });
+                if (error) { notice=R.string.catalog_invalid; }consumeDocument();redraw.run(); } });
         });
     }
-    void resume() { visible=true; }
-    void stop() { visible=false;cancel(); }
+    void restore(android.os.Bundle state) {
+        if (state==null) { return; }
+        int request=state.getInt("catalog_import_request");String uri=state.getString("catalog_import_uri");
+        if ((request==IMPORT_KEY || request==IMPORT_CATALOG) && uri!=null && uri.length()<=8192) {
+            selectedRequest=request;selectedDocument=Uri.parse(uri);
+        }
+    }
+    void save(android.os.Bundle state) {
+        state.putInt("catalog_import_request",selectedRequest);
+        state.putString("catalog_import_uri",selectedDocument==null?null:selectedDocument.toString());
+    }
+    void resume() { visible=true;consumeDocument(); }
+    void stop() { visible=false;selectedDocument=null;cancel(); }
     void destroy() { alive=false;cancel(); }
     private void cancel() {
         generation++;busy=false;CatalogHttp request=http;http=null;if (request!=null) { request.close(); }
@@ -72,7 +85,14 @@ final class CatalogPanel {
     }
     void activityResult(int request,int result,Intent data) {
         if (result!=Activity.RESULT_OK || data==null || data.getData()==null) { return; }
-        Uri uri=data.getData();long ticket=begin();
+        if (request!=IMPORT_KEY && request!=IMPORT_CATALOG) { return; }
+        selectedRequest=request;selectedDocument=data.getData();consumeDocument();
+    }
+    private void consumeDocument() {
+        // SAF results may arrive before onResume or before the saved key has loaded.
+        if (!alive || !visible || !ready || !supported || selectedDocument==null) { return; }
+        Uri uri=selectedDocument;int request=selectedRequest;selectedDocument=null;
+        long ticket=begin();
         worker.execute(() -> {
             try {
                 if (request==IMPORT_KEY) {

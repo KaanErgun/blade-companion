@@ -15,3 +15,5 @@
 - Android TLS cancellation fields must retain the underlying plain socket. `SSLSocket.close()` may send `close_notify` and raise `NetworkOnMainThreadException`; close raw transport promptly on lifecycle loss and perform TLS teardown on the existing worker. Do not suppress StrictMode or replace cancellation with an unbounded cleanup thread.
 
 - Stream report `displayed` counts unique frames submitted to the visible preview View, not panel scanout. Keep decode/preview FPS on their own monotonic phase spans and never export image bytes, session/frame IDs, endpoints or credentials. Publish the bounded latest report and revision together before asynchronous private persistence so Activity recreation cannot export the previous session.
+
+- SAF results can arrive before `onResume` and before persisted catalog keys load. Retain the selected document until both conditions hold, consume it once, and keep lifecycle cancellation separate from accepting a picker result. Real key/catalog import covers this Android ordering; pure codec tests do not.

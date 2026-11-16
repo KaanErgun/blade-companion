@@ -91,11 +91,13 @@ final class MarketPanel {
     }
     void restore(android.os.Bundle state) {
         if (state==null) { return; }
+        catalog.restore(state);
         selectedCatalog=state.getString("catalog_selection_hash");selectedId=state.getString("catalog_selection_id");
         selectedPackage=state.getString("catalog_selection_package");selectedFromCatalog=state.getBoolean("catalog_selection_local");
         String uri=state.getString("market_selected_uri");if (uri!=null && uri.length()<=8192) { selectedDocument=Uri.parse(uri); }
     }
     void save(android.os.Bundle state) {
+        catalog.save(state);
         state.putString("catalog_selection_hash",selectedCatalog);state.putString("catalog_selection_id",selectedId);
         state.putString("catalog_selection_package",selectedPackage);state.putBoolean("catalog_selection_local",selectedFromCatalog);
         state.putString("market_selected_uri",selectedDocument==null?null:selectedDocument.toString());
