@@ -190,8 +190,8 @@ public final class BladeConnection implements AutoCloseable {
                 CompanionProtocol.Packet packet = CompanionProtocol.read(stream.input);
                 if (packet.type == CompanionProtocol.END) {
                     int reason = CompanionProtocol.decodeEnd(packet, selected);
-                    measured.end(StreamStats.End.REMOTE_END);
-                    main.post(() -> { if (!closed && state.current(requested)) { fail(reason == 4 ? 1 : 4); } });
+                    measured.endRemote(reason);
+                    main.post(() -> { if (!closed && state.current(requested)) { fail(reason == 4 ? 1 : reason == 3 ? 7 : 4); } });
                     return;
                 }
                 CompanionProtocol.Frame frame = CompanionProtocol.decodeFrame(packet);

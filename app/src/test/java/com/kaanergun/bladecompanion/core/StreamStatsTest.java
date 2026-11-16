@@ -77,6 +77,14 @@ public final class StreamStatsTest {
         check(phase.json().equals(phases.snapshot().json())
                 && phase.json().contains("\"decodedFps\":10.000000")
                 && phase.json().contains("\"displayedFps\":4.000000")); checks++;
+        String[] remote = {"REMOTE_END", "REMOTE_END", "DISCONNECTED", "ERROR", "DISCONNECTED"};
+        for (int reason = 0; reason < remote.length; reason++) {
+            StreamStats endedRemote = new StreamStats(300);
+            endedRemote.endRemote(reason);
+            check(endedRemote.snapshot().endReason.equals(remote[reason])); checks++;
+        }
+        rejects(() -> new StreamStats(300).endRemote(-1)); checks++;
+        rejects(() -> new StreamStats(300).endRemote(5)); checks++;
         return checks;
     }
 }

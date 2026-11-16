@@ -65,6 +65,10 @@ public final class StreamStats {
         if (reason == null) { throw new IllegalArgumentException("Missing end reason"); }
         ended = reason;
     }
+    public synchronized void endRemote(int reason) {
+        if (reason < 0 || reason > 4) { throw new IllegalArgumentException("Invalid remote end reason"); }
+        end(reason == 3 ? End.ERROR : reason == 2 || reason == 4 ? End.DISCONNECTED : End.REMOTE_END);
+    }
     public synchronized Snapshot snapshot() {
         return new Snapshot(this);
     }
