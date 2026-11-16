@@ -20,6 +20,10 @@ public final class CompanionProtocol {
     public static final int FRAME = 0x9001, END = 0x9002;
     public static final int MAX_JPEG = 1024 * 1024;
     public static final int MAX_CONTROL = 4096;
+    /** START profiles, their FRAME geometry and maximum rate; the shared fixture pins all values. */
+    public static final int PROFILE_VGA = 0, PROFILE_HD = 1;
+    public static final int VGA_WIDTH = 640, VGA_HEIGHT = 480, VGA_FPS = 30;
+    public static final int HD_WIDTH = 1280, HD_HEIGHT = 960, HD_FPS = 10;
     private CompanionProtocol() { }
 
     public static final class Packet {
@@ -99,9 +103,12 @@ public final class CompanionProtocol {
         return body;
     }
 
-    public static byte[] start(int durationSeconds) {
+    /** Profile 0 keeps the original 4-byte START, which every OS version accepts. */
+    public static byte[] start(int durationSeconds, int profile) {
         if (durationSeconds < 1 || durationSeconds > 1800) { throw new IllegalArgumentException("Invalid duration"); }
-        return buffer(4).putInt(durationSeconds).array();
+        if (profile == PROFILE_VGA) { return buffer(4).putInt(durationSeconds).array(); }
+        if (profile != PROFILE_HD) { throw new IllegalArgumentException("Unknown profile"); }
+        return buffer(8).putInt(durationSeconds).putInt(profile).array();
     }
 
     public static byte[] session(byte[] session) {
@@ -134,14 +141,17 @@ public final class CompanionProtocol {
                 .putShort(coordinate(to.x)).putShort(coordinate(to.y)).array();
     }
 
-    public static Frame decodeFrame(Packet packet) throws IOException {
+    /** Accepts only the geometry of the profile this session was started with. */
+    public static Frame decodeFrame(Packet packet, int profile) throws IOException {
         if (packet.type != FRAME || packet.request != 0 || packet.payload.length < 40) { throw new IOException("Invalid frame"); }
         ByteBuffer value = bytes(packet.payload);
         byte[] session = new byte[16]; value.get(session);
         long id = value.getLong(), captured = value.getLong();
         int width = value.getShort() & 0xffff, height = value.getShort() & 0xffff;
         long size = value.getInt() & 0xffffffffL;
-        if (id == 0 || width != 640 || height != 480 || size > MAX_JPEG || size != value.remaining()) {
+        boolean hd = profile == PROFILE_HD;
+        if (id == 0 || width != (hd ? HD_WIDTH : VGA_WIDTH) || height != (hd ? HD_HEIGHT : VGA_HEIGHT)
+                || size > MAX_JPEG || size != value.remaining()) {
             throw new IOException("Unsupported frame dimensions or length");
         }
         byte[] jpeg = new byte[(int) size]; value.get(jpeg); requireJpeg(jpeg);

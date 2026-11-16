@@ -46,7 +46,7 @@ final class GoldenTest {
             for (int i=0;i<16;i++) { session[i]=(byte)i; }
             for (int i=0;i<32;i++) { token[i]=(byte)(32+i);hash[i]=(byte)(64+i); }
             long request=0x10203040L,frame=0x0102030405060708L;
-            wire(actual,"START",CompanionProtocol.START,request++,CompanionProtocol.start(60),false);
+            wire(actual,"START",CompanionProtocol.START,request++,CompanionProtocol.start(60,CompanionProtocol.PROFILE_VGA),false);
             wire(actual,"TEXT",CompanionProtocol.TEXT,request++,CompanionProtocol.text(session,frame,"Yön"),false);
             wire(actual,"ARROW",CompanionProtocol.ARROW,request++,CompanionProtocol.arrow(session,frame,
                     new FrameCoordinates.Point(0,0),new FrameCoordinates.Point(1,1)),false);
@@ -54,7 +54,8 @@ final class GoldenTest {
             wire(actual,"UPLOAD_CHUNK",MarketProtocol.CHUNK,request++,MarketProtocol.chunk(session,65536,new byte[]{65,66,67},3),true);
             wire(actual,"INSTALL",MarketProtocol.INSTALL,request++,MarketProtocol.install(session,
                     MarketProtocol.HUD|MarketProtocol.NETWORK|MarketProtocol.STORAGE,CompanionProtocol.hex(hash)),true);
-            wire(actual,"ACTION",MarketProtocol.ACTION,request,MarketProtocol.action(2,"org.blade.hello",CompanionProtocol.hex(hash)),true);
+            wire(actual,"ACTION",MarketProtocol.ACTION,request++,MarketProtocol.action(2,"org.blade.hello",CompanionProtocol.hex(hash)),true);
+            wire(actual,"START_HD",CompanionProtocol.START,request,CompanionProtocol.start(60,CompanionProtocol.PROFILE_HD),false);
             if (!expected.equals(actual)) {
                 for (String key:expected.stringPropertyNames()) {
                     if (!expected.getProperty(key).equals(actual.getProperty(key))) { throw new AssertionError("Golden mismatch: "+key); }

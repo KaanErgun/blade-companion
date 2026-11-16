@@ -28,27 +28,37 @@ public final class ProtocolTest {
     private static CompanionProtocol.Packet read(byte[] bytes) throws IOException {
         return CompanionProtocol.read(new DataInputStream(new ByteArrayInputStream(bytes)));
     }
-    private static CompanionProtocol.Packet frame(long id) {
+    private static CompanionProtocol.Packet frame(long id) { return frame(id, 640, 480); }
+    private static CompanionProtocol.Packet frame(long id, int width, int height) {
         byte[] data = ByteBuffer.allocate(40 + JPEG.length).put(SESSION).putLong(id).putLong(100)
-                .putShort((short) 640).putShort((short) 480).putInt(JPEG.length).put(JPEG).array();
+                .putShort((short) width).putShort((short) height).putInt(JPEG.length).put(JPEG).array();
         return new CompanionProtocol.Packet(CompanionProtocol.FRAME, 0, data);
     }
     public static int run() {
         checks = 0;
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            CompanionProtocol.write(new DataOutputStream(bytes), CompanionProtocol.START, 0xffffffffL, CompanionProtocol.start(300));
+            CompanionProtocol.write(new DataOutputStream(bytes), CompanionProtocol.START, 0xffffffffL, CompanionProtocol.start(300, CompanionProtocol.PROFILE_VGA));
             check(Arrays.equals(Arrays.copyOf(bytes.toByteArray(), 16), header(3, 0xffffffffL, 4)), "exact big-endian request header");
             check(ByteBuffer.wrap(bytes.toByteArray()).getInt(16) == 300, "duration encoded big-endian");
             // Shared OS protocol.c/test_protocol.c vector: START, request 0x10203040, length 4.
             bytes.reset();
-            CompanionProtocol.write(new DataOutputStream(bytes), CompanionProtocol.START, 0x10203040, CompanionProtocol.start(300));
+            CompanionProtocol.write(new DataOutputStream(bytes), CompanionProtocol.START, 0x10203040, CompanionProtocol.start(300, CompanionProtocol.PROFILE_VGA));
             check(CompanionProtocol.hex(Arrays.copyOf(bytes.toByteArray(), 16)).equals("424c4431000100031020304000000004"),
                     "shared OS exact wire vector");
+            // Only HD uses the 8-byte START: duration, then profile.
+            byte[] hd = CompanionProtocol.start(300, CompanionProtocol.PROFILE_HD);
+            check(hd.length == 8 && ByteBuffer.wrap(hd).getInt(0) == 300 && ByteBuffer.wrap(hd).getInt(4) == 1, "HD start form");
+            check(CompanionProtocol.start(300, CompanionProtocol.PROFILE_VGA).length == 4, "VGA keeps the original start form");
+            rejects(() -> CompanionProtocol.start(300, 2), "unknown profile rejected");
+            rejects(() -> CompanionProtocol.start(300, -1), "negative profile rejected");
+            rejects(() -> CompanionProtocol.start(0, CompanionProtocol.PROFILE_HD), "HD duration lower bound");
+            check(CompanionProtocol.HD_WIDTH * CompanionProtocol.VGA_HEIGHT == CompanionProtocol.VGA_WIDTH * CompanionProtocol.HD_HEIGHT,
+                    "both profiles keep 4:3 for preview and annotation");
             rejects(() -> CompanionProtocol.write(new DataOutputStream(new ByteArrayOutputStream()), 3, 0, new byte[4]), "zero request rejected");
             rejects(() -> CompanionProtocol.write(new DataOutputStream(new ByteArrayOutputStream()), 3, 0x100000000L, new byte[4]), "request overflow rejected");
-            rejects(() -> CompanionProtocol.start(0), "zero duration rejected");
-            rejects(() -> CompanionProtocol.start(1801), "duration upper bound");
+            rejects(() -> CompanionProtocol.start(0, CompanionProtocol.PROFILE_VGA), "zero duration rejected");
+            rejects(() -> CompanionProtocol.start(1801, CompanionProtocol.PROFILE_VGA), "duration upper bound");
             for (int length = 0; length < 16; length++) {
                 final int size = length;
                 rejects(() -> read(Arrays.copyOf(header(0x8001, 1, 4), size)), "truncated header");
@@ -75,16 +85,21 @@ public final class ProtocolTest {
             rejects(() -> CompanionProtocol.response(new CompanionProtocol.Packet(0x8001, 1, new byte[] {0,0,0,1,0}), 1, 1), "error payload cannot contain extra data");
             try { CompanionProtocol.response(new CompanionProtocol.Packet(0x8001, 1, new byte[] {0,0,0,1}), 1, 1); throw new AssertionError("auth status"); }
             catch (CompanionProtocol.RemoteException error) { check(error.status == 1, "auth rejection preserved"); }
-            CompanionProtocol.Frame image = CompanionProtocol.decodeFrame(frame(Long.MIN_VALUE));
+            CompanionProtocol.Frame image = CompanionProtocol.decodeFrame(frame(Long.MIN_VALUE), CompanionProtocol.PROFILE_VGA);
             check(image.id == Long.MIN_VALUE && image.width == 640 && image.height == 480 && Arrays.equals(image.jpeg, JPEG), "frame fields decoded");
+            image = CompanionProtocol.decodeFrame(frame(2, 1280, 960), CompanionProtocol.PROFILE_HD);
+            check(image.width == 1280 && image.height == 960, "HD frame geometry decoded");
+            rejects(() -> CompanionProtocol.decodeFrame(frame(2, 1280, 960), CompanionProtocol.PROFILE_VGA), "HD frame in a VGA session");
+            rejects(() -> CompanionProtocol.decodeFrame(frame(2), CompanionProtocol.PROFILE_HD), "VGA frame in an HD session");
+            rejects(() -> CompanionProtocol.decodeFrame(frame(2, 1280, 480), CompanionProtocol.PROFILE_HD), "mixed geometry rejected");
             check(CompanionProtocol.newer(Long.MIN_VALUE, Long.MAX_VALUE), "unsigned frame ordering crosses signed boundary");
             check(!CompanionProtocol.newer(1, -1), "wrapped or stale frame is rejected");
             CompanionProtocol.Packet invalid = frame(1); invalid.payload[39]++;
             final CompanionProtocol.Packet invalidLength = invalid;
-            rejects(() -> CompanionProtocol.decodeFrame(invalidLength), "JPEG length mismatch");
+            rejects(() -> CompanionProtocol.decodeFrame(invalidLength, CompanionProtocol.PROFILE_VGA), "JPEG length mismatch");
             invalid = frame(1); invalid.payload[32] = 0;
             final CompanionProtocol.Packet dimensions = invalid;
-            rejects(() -> CompanionProtocol.decodeFrame(dimensions), "unknown image dimensions");
+            rejects(() -> CompanionProtocol.decodeFrame(dimensions, CompanionProtocol.PROFILE_VGA), "unknown image dimensions");
             byte[] photo = ByteBuffer.allocate(44 + JPEG.length).putLong(7).put(CompanionProtocol.sha256(JPEG)).putInt(JPEG.length).put(JPEG).array();
             check(CompanionProtocol.decodePhoto(photo).frameId == 7, "photo hash and metadata verified");
             photo[8] ^= 1;
@@ -99,7 +114,7 @@ public final class ProtocolTest {
             rejects(() -> CompanionProtocol.text(SESSION, 1, ""), "empty text rejected");
             rejects(() -> CompanionProtocol.text(SESSION, 1, "a\nb"), "OS ASCII control boundary");
             rejects(() -> CompanionProtocol.frame(SESSION, 0), "zero frozen frame rejected");
-            rejects(() -> CompanionProtocol.decodeFrame(frame(0)), "zero incoming frame rejected");
+            rejects(() -> CompanionProtocol.decodeFrame(frame(0), CompanionProtocol.PROFILE_VGA), "zero incoming frame rejected");
             rejects(() -> CompanionProtocol.text(SESSION, 1, "\ud800"), "unpaired surrogate rejected");
             rejects(() -> CompanionProtocol.utf8Text(new byte[] {(byte) 0xc0, (byte) 0x80}), "malformed UTF-8 rejected");
             rejects(() -> CompanionProtocol.session(new byte[15]), "short session rejected");

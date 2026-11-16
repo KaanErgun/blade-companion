@@ -15,6 +15,7 @@ import com.kaanergun.bladecompanion.core.CompanionProtocol;
 import com.kaanergun.bladecompanion.core.FrameCoordinates;
 import com.kaanergun.bladecompanion.core.PairingRecord;
 import com.kaanergun.bladecompanion.core.StreamStats;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.DataInputStream;
@@ -51,7 +52,7 @@ public final class BladeConnection implements AutoCloseable {
     private final AssistanceState state = new AssistanceState();
     private volatile Socket controlSocket, subscriberSocket;
     private volatile boolean closed;
-    private volatile boolean frozen, freezing, cameraAvailable, commanding;
+    private volatile boolean frozen, freezing, cameraAvailable, hdAvailable, commanding;
     private final java.util.concurrent.atomic.AtomicReference<FrameImage> pendingFrame = new java.util.concurrent.atomic.AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicBoolean framePosted = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile CompanionProtocol.Frame displayed;
@@ -69,6 +70,8 @@ public final class BladeConnection implements AutoCloseable {
     public boolean frozen() { return frozen; }
     public boolean busy() { return freezing || commanding; }
     public boolean cameraAvailable() { return cameraAvailable; }
+    /** True only when STATUS advertises the exact HD profile; older OS versions lack it. */
+    public boolean hdAvailable() { return hdAvailable; }
     public CompanionProtocol.Frame displayed() { return displayed; }
     public Bitmap displayedBitmap() { return displayedBitmap; }
     public StreamStats.Snapshot statistics() { StreamStats value=statistics; return value==null?null:value.snapshot(); }
@@ -85,14 +88,22 @@ public final class BladeConnection implements AutoCloseable {
             control = channel(false, 0);
             control.call(CompanionProtocol.AUTH, pairing.token());
             JSONObject status = new JSONObject(CompanionProtocol.utf8Text(control.call(CompanionProtocol.STATUS, new byte[0])));
+            // Frame geometry is the live session's profile: another owner may be streaming HD.
+            boolean vga = geometry(status, CompanionProtocol.VGA_WIDTH, CompanionProtocol.VGA_HEIGHT);
+            boolean hd = geometry(status, CompanionProtocol.HD_WIDTH, CompanionProtocol.HD_HEIGHT);
             if (!(status.get("protocol") instanceof Integer) || status.getInt("protocol") != 1
-                    || !(status.get("frame_width") instanceof Integer) || !(status.get("frame_height") instanceof Integer)
                     || !(status.get("camera_available") instanceof Boolean)
                     || !(status.get("session_active") instanceof Boolean) || !(status.get("os_version") instanceof String)
-                    || status.getInt("frame_width") != 640 || status.getInt("frame_height") != 480) {
+                    || !(vga || hd)) {
                 throw new IOException("Unexpected status");
             }
             cameraAvailable = status.getBoolean("camera_available");
+            JSONArray profiles = status.optJSONArray("profiles");
+            JSONArray advertised = profiles == null ? null : profiles.optJSONArray(CompanionProtocol.PROFILE_HD);
+            hdAvailable = advertised != null && advertised.length() == 3
+                    && advertised.opt(0) instanceof Integer && advertised.optInt(0) == CompanionProtocol.HD_WIDTH
+                    && advertised.opt(1) instanceof Integer && advertised.optInt(1) == CompanionProtocol.HD_HEIGHT
+                    && advertised.opt(2) instanceof Integer && advertised.optInt(2) == CompanionProtocol.HD_FPS;
             if (state.connected(operation)) { changed(); }
         });
         worker.scheduleWithFixedDelay(() -> {
@@ -102,16 +113,17 @@ public final class BladeConnection implements AutoCloseable {
         }, 5, 5, TimeUnit.SECONDS);
     }
 
-    public void start(int durationSeconds) {
+    public void start(int durationSeconds, int profile) {
         if (busy()) { return; }
+        byte[] request = CompanionProtocol.start(durationSeconds, profile);
         StreamStats measured = new StreamStats(durationSeconds);
         operation = state.beginStart(); statistics=measured; countedDisplay=null; changed();
         final long requested = operation;
         execute(() -> {
-            byte[] created = control.call(CompanionProtocol.START, CompanionProtocol.start(durationSeconds));
+            byte[] created = control.call(CompanionProtocol.START, request);
             if (closed || !state.started(requested, CompanionProtocol.hex(created))) { return; }
             session = created; changed();
-            Thread reader = new Thread(() -> readFrames(requested, created, measured), "blade-frames");
+            Thread reader = new Thread(() -> readFrames(requested, created, measured, profile), "blade-frames");
             reader.start();
         });
     }
@@ -178,7 +190,12 @@ public final class BladeConnection implements AutoCloseable {
         return selected;
     }
 
-    private void readFrames(long requested, byte[] selected, StreamStats measured) {
+    private static boolean geometry(JSONObject status, int width, int height) {
+        return status.opt("frame_width") instanceof Integer && status.optInt("frame_width") == width
+                && status.opt("frame_height") instanceof Integer && status.optInt("frame_height") == height;
+    }
+
+    private void readFrames(long requested, byte[] selected, StreamStats measured, int profile) {
         Channel stream = null;
         try {
             stream = channel(true, requested);
@@ -194,7 +211,7 @@ public final class BladeConnection implements AutoCloseable {
                     main.post(() -> { if (!closed && state.current(requested)) { fail(reason == 4 ? 1 : reason == 3 ? 7 : 4); } });
                     return;
                 }
-                CompanionProtocol.Frame frame = CompanionProtocol.decodeFrame(packet);
+                CompanionProtocol.Frame frame = CompanionProtocol.decodeFrame(packet, profile);
                 if (!MessageDigest.isEqual(frame.session, selected) || (received && !CompanionProtocol.newer(frame.id, lastId))) {
                     throw new IOException("Stale or foreign frame");
                 }

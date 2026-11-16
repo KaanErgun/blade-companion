@@ -204,6 +204,11 @@ Bu seçim yalnız bu telefondaki katalog doğrulamasını etkiler. Blade üzerin
     <string name="camera_duration_title">Kamera oturumu süresi</string>
     <string name="camera_duration_short">5 dakika</string>
     <string name="camera_duration_long">30 dakika</string>
+    <string name="camera_resolution">Çözünürlük: %1$s</string>
+    <string name="camera_resolution_title">Kamera çözünürlüğü</string>
+    <string name="camera_resolution_vga">%1$d×%2$d</string>
+    <string name="camera_resolution_hd">%1$d×%2$d (HD, en fazla %3$d FPS)</string>
+    <string name="camera_resolution_unsupported">Bu Blade OS sürümü HD akışı sunmuyor. 640×480 seçebilirsin.</string>
     <string name="stream_statistics">Alınan: %1$d · Çözülen: %2$d (%5$.1f FPS) · Önizleme: %3$d (%6$.1f FPS) · Kare boşluğu: %4$d</string>
     <string name="stream_report_export">Son oturumun ölçüm raporunu kaydet</string>
     <string name="stream_report_note">Ekran yalnız açık kamera oturumunda uyanık kalır. Rapor; sayaç, süre ve FPS içerir, görüntü veya eşleştirme anahtarı içermez. Önizleme sayısı ekrana verilen yeni kareleri ölçer; optik gösterim veya gecikme ölçümü değildir.</string>

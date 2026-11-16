@@ -72,6 +72,7 @@ public final class MainActivity extends Activity {
     private PhotoExportStore photoStore;
     private String reportJson, pendingReport;
     private int sessionSeconds=300;
+    private int sessionProfile=CompanionProtocol.PROFILE_VGA;
     private EditText hostInput, annotationInput;
     private String annotationText = "";
     private int networkNotice;
@@ -126,6 +127,8 @@ public final class MainActivity extends Activity {
         if (savedInstanceState != null) {
             page = savedInstanceState.getInt("page", 0);
             sessionSeconds=savedInstanceState.getInt("session_seconds",300)==1800?1800:300;
+            sessionProfile=savedInstanceState.getInt("session_profile",CompanionProtocol.PROFILE_VGA)==CompanionProtocol.PROFILE_HD
+                    ?CompanionProtocol.PROFILE_HD:CompanionProtocol.PROFILE_VGA;
             pendingReport=savedInstanceState.getString("pending_report");
             if (pendingReport!=null && pendingReport.length()>4096) { pendingReport=null; }
             annotationText = savedInstanceState.getString("annotation", "");
@@ -197,6 +200,7 @@ public final class MainActivity extends Activity {
         market.save(state);
         state.putInt("page", page);
         state.putInt("session_seconds",sessionSeconds);
+        state.putInt("session_profile",sessionProfile);
         state.putString("pending_report",pendingReport);
         state.putString("annotation", annotationInput == null ? annotationText : annotationInput.getText().toString());
         state.putBoolean("photo_export", photoExportPending);
@@ -305,11 +309,21 @@ public final class MainActivity extends Activity {
                 .setSingleChoiceItems(new String[]{getString(R.string.camera_duration_short),getString(R.string.camera_duration_long)},
                         sessionSeconds==1800?1:0,(dialog,which) -> { sessionSeconds=which==1?1800:300;dialog.dismiss();render(); }).show());
         addWithTopSpace(content,duration,8);
+        boolean hd=sessionProfile==CompanionProtocol.PROFILE_HD;
+        Button resolution=button(R.string.camera_resolution,false);resolution.setText(getString(R.string.camera_resolution,resolutionLabel(hd)));
+        resolution.setEnabled(state!=AssistanceState.State.ACTIVE && state!=AssistanceState.State.STARTING);
+        resolution.setOnClickListener(view -> new android.app.AlertDialog.Builder(this).setTitle(R.string.camera_resolution_title)
+                .setSingleChoiceItems(new String[]{resolutionLabel(false),resolutionLabel(true)},hd?1:0,(dialog,which) -> {
+                    sessionProfile=which==1?CompanionProtocol.PROFILE_HD:CompanionProtocol.PROFILE_VGA;dialog.dismiss();render(); }).show());
+        addWithTopSpace(content,resolution,4);
+        // An older OS without the advertised HD profile is never sent the 8-byte START.
+        boolean profileReady=!hd || (connection!=null && connection.hdAvailable());
+        if (state==AssistanceState.State.READY && !profileReady) { paragraph(R.string.camera_resolution_unsupported); }
         Button start = button(state == AssistanceState.State.DISCONNECTED ? R.string.open_pairing : R.string.camera_start, true);
-        start.setEnabled(state == AssistanceState.State.DISCONNECTED || (state == AssistanceState.State.READY && connection.cameraAvailable() && !connection.busy()));
+        start.setEnabled(state == AssistanceState.State.DISCONNECTED || (state == AssistanceState.State.READY && connection.cameraAvailable() && !connection.busy() && profileReady));
         start.setOnClickListener(view -> {
             if (state == AssistanceState.State.DISCONNECTED) { page = 1; render(); }
-            else { networkNotice = 0; connection.start(sessionSeconds); render(); }
+            else { networkNotice = 0; connection.start(sessionSeconds, sessionProfile); render(); }
         });
         addWithTopSpace(content, start, 12);
         Button stop = button(R.string.camera_stop, false);
@@ -355,6 +369,11 @@ public final class MainActivity extends Activity {
                     .setType("application/json").putExtra(Intent.EXTRA_TITLE,"Blade-stream-report.json"),EXPORT_REPORT);
         });
         addWithTopSpace(content,report,8);paragraph(R.string.stream_report_note);
+    }
+
+    private String resolutionLabel(boolean hd) {
+        return hd ? getString(R.string.camera_resolution_hd, CompanionProtocol.HD_WIDTH, CompanionProtocol.HD_HEIGHT, CompanionProtocol.HD_FPS)
+                : getString(R.string.camera_resolution_vga, CompanionProtocol.VGA_WIDTH, CompanionProtocol.VGA_HEIGHT);
     }
 
     private void retainStatistics() {
